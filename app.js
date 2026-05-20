@@ -53,6 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initDetailPanel();
     initLegendToggles();
     initBasemapControl();
+    initMapSearch();
 });
 
 /* ===== MAP INIT ===== */
@@ -222,7 +223,7 @@ function createMarker(lat, lng, amenity, name, props, idx) {
 /* ===== LOAD ADMIN BOUNDARY ===== */
 async function loadAdminBoundary() {
     try {
-        const query = `[out:json][timeout:30];relation["name"="Kota Batam"]["admin_level"];out geom;`;
+        const query = `[out:json][timeout:30];relation["name"="Batam"]["admin_level"];out geom;`;
         const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
         const resp = await fetch(url);
         const data = await resp.json();
@@ -286,8 +287,8 @@ function createInvertedMask(geojson) {
     maskLayer = L.geoJSON(maskGeoJSON, {
         pane: 'maskPane',
         style: {
-            fillColor: '#0d1117',
-            fillOpacity: 0.7,
+            fillColor: '#000000',
+            fillOpacity: 0.5,
             stroke: false,
             interactive: false
         }
@@ -503,35 +504,98 @@ function normalizeBankName(name, operator) {
 /* ===== CHARTS ===== */
 function renderTypeChart(counts) {
     const ctx = document.getElementById('chart-type').getContext('2d');
+    const total = counts.bank + counts.atm + counts.bureau_de_change;
+    const chartColors = ['#1a73e8', '#34a853', '#f59e0b'];
+    const chartIcons = ['fa-building-columns', 'fa-credit-card', 'fa-money-bill-transfer'];
+    const chartBgLight = ['#dbeafe', '#dcfce7', '#fef3c7'];
+
     new Chart(ctx, {
         type: 'doughnut',
         data: {
             labels: ['Bank', 'ATM', 'Money Changer'],
             datasets: [{
                 data: [counts.bank, counts.atm, counts.bureau_de_change],
-                backgroundColor: ['#1a73e8', '#34a853', '#f59e0b'],
+                backgroundColor: chartColors,
                 borderWidth: 3,
                 borderColor: '#fff',
-                hoverOffset: 8
+                hoverOffset: 10,
+                hoverBorderWidth: 0
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: {
-                        padding: 20,
-                        usePointStyle: true,
-                        pointStyleWidth: 10,
-                        font: { family: 'Inter', size: 12, weight: 500 }
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(30,41,59,0.9)',
+                    titleFont: { family: 'Inter', size: 13, weight: 600 },
+                    bodyFont: { family: 'Inter', size: 12 },
+                    padding: 12,
+                    cornerRadius: 10,
+                    displayColors: true,
+                    boxPadding: 6,
+                    callbacks: {
+                        label: function(ctx) {
+                            const pct = total > 0 ? ((ctx.parsed / total) * 100).toFixed(1) : 0;
+                            return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+                        }
                     }
                 }
             },
-            cutout: '60%'
-        }
+            cutout: '65%',
+            animation: {
+                animateRotate: true,
+                duration: 1000
+            }
+        },
+        plugins: [{
+            id: 'centerText',
+            afterDraw(chart) {
+                const { width, height, ctx } = chart;
+                ctx.save();
+                ctx.font = '800 26px Inter';
+                ctx.fillStyle = '#1e293b';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(total, width / 2, height / 2 + 2);
+                ctx.font = '500 11px Inter';
+                ctx.fillStyle = '#94a3b8';
+                ctx.textBaseline = 'top';
+                ctx.fillText('Total Lokasi', width / 2, height / 2 + 6);
+                ctx.restore();
+            }
+        }]
     });
+
+    // Build custom HTML legend
+    const legendContainer = document.createElement('div');
+    legendContainer.className = 'custom-chart-legend';
+
+    const dataValues = [counts.bank, counts.atm, counts.bureau_de_change];
+    const labels = ['Bank', 'ATM', 'Money Changer'];
+
+    labels.forEach((label, i) => {
+        const pct = total > 0 ? ((dataValues[i] / total) * 100).toFixed(1) : '0.0';
+        const item = document.createElement('div');
+        item.className = 'legend-pill';
+        item.innerHTML = `
+            <div class="legend-pill-icon" style="background:${chartBgLight[i]};color:${chartColors[i]};">
+                <i class="fas ${chartIcons[i]}"></i>
+            </div>
+            <div class="legend-pill-info">
+                <span class="legend-pill-label">${label}</span>
+                <span class="legend-pill-value">${dataValues[i]} <small>(${pct}%)</small></span>
+            </div>
+        `;
+        legendContainer.appendChild(item);
+    });
+
+    // Insert legend after the chart canvas
+    const chartCard = document.getElementById('chart-type').closest('.chart-card');
+    const existing = chartCard.querySelector('.custom-chart-legend');
+    if (existing) existing.remove();
+    chartCard.appendChild(legendContainer);
 }
 
 function renderTopChart(bankNameCounts) {
@@ -615,4 +679,220 @@ function renderTable() {
         });
         tableSearchInit = true;
     }
+}
+
+/* ===== MAP SEARCH ===== */
+let searchHighlightMarker = null;
+
+function initMapSearch() {
+    const input = document.getElementById('search-input');
+    const resultsEl = document.getElementById('search-results');
+    const clearBtn = document.getElementById('search-clear');
+    let debounceTimer = null;
+
+    // Debounced search on input
+    input.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        const q = input.value.trim();
+
+        // Show/hide clear button
+        clearBtn.classList.toggle('visible', q.length > 0);
+
+        if (q.length < 2) {
+            resultsEl.classList.remove('open');
+            resultsEl.innerHTML = '';
+            removeSearchHighlight();
+            return;
+        }
+
+        debounceTimer = setTimeout(() => {
+            performSearch(q, resultsEl);
+        }, 200);
+    });
+
+    // Clear button
+    clearBtn.addEventListener('click', () => {
+        input.value = '';
+        clearBtn.classList.remove('visible');
+        resultsEl.classList.remove('open');
+        resultsEl.innerHTML = '';
+        removeSearchHighlight();
+        input.focus();
+    });
+
+    // Close results on Escape
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            input.value = '';
+            clearBtn.classList.remove('visible');
+            resultsEl.classList.remove('open');
+            resultsEl.innerHTML = '';
+            removeSearchHighlight();
+            input.blur();
+        }
+    });
+
+    // Close results when clicking outside
+    document.addEventListener('click', (e) => {
+        const searchContainer = document.getElementById('map-search');
+        if (!searchContainer.contains(e.target)) {
+            resultsEl.classList.remove('open');
+        }
+    });
+
+    // Re-open on focus if there's text
+    input.addEventListener('focus', () => {
+        if (input.value.trim().length >= 2 && resultsEl.innerHTML.length > 0) {
+            resultsEl.classList.add('open');
+        }
+    });
+}
+
+function performSearch(query, resultsEl) {
+    const q = query.toLowerCase();
+    const typeLabels = { 'atm': 'ATM', 'bank': 'Bank', 'bureau_de_change': 'Money Changer' };
+    const typeIcons = { 'atm': 'fa-credit-card', 'bank': 'fa-building-columns', 'bureau_de_change': 'fa-money-bill-transfer' };
+    const badgeClass = { 'atm': 's-atm', 'bank': 's-bank', 'bureau_de_change': 's-exchange' };
+    const iconClass = { 'atm': 'icon-atm', 'bank': 'icon-bank', 'bureau_de_change': 'icon-exchange' };
+
+    // Search through all features
+    const results = [];
+    allFeatures.forEach((f, idx) => {
+        const props = f.properties;
+        const name = props.name || '';
+        const operator = props.operator || '';
+        const amenity = props.amenity || 'bank';
+        const typeLabel = typeLabels[amenity] || amenity;
+
+        const searchText = (name + ' ' + operator + ' ' + typeLabel).toLowerCase();
+        if (!searchText.includes(q)) return;
+
+        // Get coordinates
+        let lat, lng;
+        if (f.geometry.type === 'Point') {
+            lng = f.geometry.coordinates[0];
+            lat = f.geometry.coordinates[1];
+        } else if (f.geometry.type === 'Polygon') {
+            const coords = f.geometry.coordinates[0];
+            lat = coords.reduce((s, c) => s + c[1], 0) / coords.length;
+            lng = coords.reduce((s, c) => s + c[0], 0) / coords.length;
+        }
+
+        if (!lat || !lng) return;
+
+        results.push({ name, operator, amenity, typeLabel, lat, lng, props, idx });
+    });
+
+    // Limit to 20 results
+    const limited = results.slice(0, 20);
+
+    // Build results HTML
+    if (limited.length === 0) {
+        resultsEl.innerHTML = `
+            <div class="search-no-results">
+                <i class="fas fa-search"></i>
+                <p>Tidak ditemukan hasil untuk "${escapeHtml(query)}"</p>
+                <small>Coba kata kunci lain</small>
+            </div>`;
+        resultsEl.classList.add('open');
+        return;
+    }
+
+    let html = `<div class="search-results-header">
+        <span>Hasil Pencarian</span>
+        <span class="result-count">${results.length > 20 ? '20+' : results.length}</span>
+    </div>`;
+
+    limited.forEach((r) => {
+        const highlightedName = highlightMatch(r.name || 'Tanpa Nama', query);
+        const metaText = r.operator ? r.operator : `${r.lat.toFixed(4)}, ${r.lng.toFixed(4)}`;
+
+        html += `
+        <div class="search-result-item" data-lat="${r.lat}" data-lng="${r.lng}" data-idx="${r.idx}">
+            <div class="search-result-icon ${iconClass[r.amenity] || 'icon-bank'}">
+                <i class="fas ${typeIcons[r.amenity] || 'fa-building-columns'}"></i>
+            </div>
+            <div class="search-result-info">
+                <div class="search-result-name">${highlightedName}</div>
+                <div class="search-result-meta"><i class="fas fa-building" style="margin-right:4px;font-size:10px;"></i>${escapeHtml(metaText)}</div>
+            </div>
+            <span class="search-result-badge ${badgeClass[r.amenity] || 's-bank'}">${r.typeLabel}</span>
+        </div>`;
+    });
+
+    resultsEl.innerHTML = html;
+    resultsEl.classList.add('open');
+
+    // Add click handlers to results
+    resultsEl.querySelectorAll('.search-result-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const lat = parseFloat(item.dataset.lat);
+            const lng = parseFloat(item.dataset.lng);
+            const idx = parseInt(item.dataset.idx);
+            const feature = allFeatures[idx];
+
+            // Fly to location
+            map.flyTo([lat, lng], 17, { duration: 1.2 });
+
+            // Add a highlight pulse marker
+            addSearchHighlight(lat, lng);
+
+            // Open detail panel
+            if (feature) {
+                const props = feature.properties;
+                const amenity = props.amenity || 'bank';
+                const name = props.name || props.operator || 'Unknown';
+                const domain = getBankDomain(name, props.operator);
+                setTimeout(() => {
+                    showDetail(props, lat, lng, amenity, domain);
+                }, 600);
+            }
+
+            // Close results
+            resultsEl.classList.remove('open');
+        });
+    });
+}
+
+function addSearchHighlight(lat, lng) {
+    removeSearchHighlight();
+
+    const pulseIcon = L.divIcon({
+        html: `<div class="search-pulse-marker">
+            <div class="search-pulse-ring"></div>
+            <div class="search-pulse-dot"></div>
+        </div>`,
+        className: '',
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+    });
+
+    searchHighlightMarker = L.marker([lat, lng], { icon: pulseIcon, interactive: false }).addTo(map);
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => removeSearchHighlight(), 4000);
+}
+
+function removeSearchHighlight() {
+    if (searchHighlightMarker) {
+        map.removeLayer(searchHighlightMarker);
+        searchHighlightMarker = null;
+    }
+}
+
+function highlightMatch(text, query) {
+    if (!query) return escapeHtml(text);
+    const escaped = escapeHtml(text);
+    const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
+    return escaped.replace(regex, '<mark>$1</mark>');
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

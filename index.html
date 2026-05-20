@@ -51,6 +51,18 @@
         <section class="page active" id="page-map">
             <div id="map"></div>
 
+            <!-- Search Bar -->
+            <div class="map-search" id="map-search">
+                <div class="search-input-wrapper">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" id="search-input" placeholder="Cari ATM, Bank, Money Changer..." autocomplete="off">
+                    <button class="search-clear" id="search-clear" title="Hapus pencarian">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="search-results" id="search-results"></div>
+            </div>
+
             <!-- Basemap Switcher -->
             <div class="basemap-control" id="basemap-control">
                 <button class="basemap-toggle" id="basemap-toggle" title="Ganti Basemap">
